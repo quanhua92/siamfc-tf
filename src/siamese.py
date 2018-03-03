@@ -55,6 +55,7 @@ def build_tracking_graph(final_score_sz, design, env):
     # extract tensor of x_crops (3 scales)
     x_crops = extract_crops_x(frame_padded_x, npad_x, pos_x_ph, pos_y_ph, x_sz0_ph, x_sz1_ph, x_sz2_ph, design.search_sz)
     # use crops as input of (MatConvnet imported) pre-trained fully-convolutional Siamese net
+    print(os.path.join(env.root_pretrained,design.net))
     template_z, templates_x, p_names_list, p_val_list = _create_siamese(os.path.join(env.root_pretrained,design.net), x_crops, z_crops)
     template_z = tf.squeeze(template_z)
     templates_z = tf.stack([template_z, template_z, template_z])
@@ -72,13 +73,13 @@ def _create_siamese(net_path, net_x, net_z):
     params_names_list, params_values_list = _import_from_matconvnet(net_path)
 
     # loop through the flag arrays and re-construct network, reading parameters of conv and bnorm layers
-    for i in xrange(_num_layers):
-        print '> Layer '+str(i+1)
+    for i in range(_num_layers):
+        print('> Layer '+str(i+1))
         # conv
         conv_W_name = _find_params('conv'+str(i+1)+'f', params_names_list)[0]
         conv_b_name = _find_params('conv'+str(i+1)+'b', params_names_list)[0]
-        print '\t\tCONV: setting '+conv_W_name+' '+conv_b_name
-        print '\t\tCONV: stride '+str(_conv_stride[i])+', filter-group '+str(_filtergroup_yn[i])
+        print('\t\tCONV: setting '+conv_W_name+' '+conv_b_name)
+        print('\t\tCONV: stride '+str(_conv_stride[i])+', filter-group '+str(_filtergroup_yn[i]))
         conv_W = params_values_list[params_names_list.index(conv_W_name)]
         conv_b = params_values_list[params_names_list.index(conv_b_name)]
         # batchnorm
@@ -86,7 +87,7 @@ def _create_siamese(net_path, net_x, net_z):
             bn_beta_name = _find_params('bn'+str(i+1)+'b', params_names_list)[0]
             bn_gamma_name = _find_params('bn'+str(i+1)+'m', params_names_list)[0]
             bn_moments_name = _find_params('bn'+str(i+1)+'x', params_names_list)[0]
-            print '\t\tBNORM: setting '+bn_beta_name+' '+bn_gamma_name+' '+bn_moments_name
+            print('\t\tBNORM: setting '+bn_beta_name+' '+bn_gamma_name+' '+bn_moments_name)
             bn_beta = params_values_list[params_names_list.index(bn_beta_name)]
             bn_gamma = params_values_list[params_names_list.index(bn_gamma_name)]
             bn_moments = params_values_list[params_names_list.index(bn_moments_name)]
@@ -109,11 +110,11 @@ def _create_siamese(net_path, net_x, net_z):
         
         # add max pool if required
         if _pool_stride[i]>0:
-            print '\t\tMAX-POOL: size '+str(_pool_sz)+ ' and stride '+str(_pool_stride[i])
+            print('\t\tMAX-POOL: size '+str(_pool_sz)+ ' and stride '+str(_pool_stride[i]))
             net_x = tf.nn.max_pool(net_x, [1,_pool_sz,_pool_sz,1], strides=[1,_pool_stride[i],_pool_stride[i],1], padding='VALID', name='pool'+str(i+1))
             net_z = tf.nn.max_pool(net_z, [1,_pool_sz,_pool_sz,1], strides=[1,_pool_stride[i],_pool_stride[i],1], padding='VALID', name='pool'+str(i+1))
 
-    print
+    print()
 
     return net_z, net_x, params_names_list, params_values_list
 
@@ -125,9 +126,9 @@ def _import_from_matconvnet(net_path):
     params = net_dot_mat['params']
     params = params[0][0]
     params_names = params['name'][0]
-    params_names_list = [params_names[p][0] for p in xrange(params_names.size)]
+    params_names_list = [params_names[p][0] for p in range(params_names.size)]
     params_values = params['value'][0]
-    params_values_list = [params_values[p] for p in xrange(params_values.size)]
+    params_values_list = [params_values[p] for p in range(params_values.size)]
     return params_names_list, params_values_list
 
 

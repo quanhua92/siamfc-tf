@@ -1,8 +1,8 @@
 {
 	"n_subseq": 3,
 	"dist_threshold": 20,
-	"stop_on_failure": 0,
+	"stop_on_failure": 1,
 	"dataset": "validation",
-	"video": "all",
+	"video": "tc_Bikeshow_ce",
 	"start_frame": 0
 }
