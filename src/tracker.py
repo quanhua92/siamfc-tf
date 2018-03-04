@@ -1,6 +1,6 @@
 
 import tensorflow as tf
-print('Using Tensorflow '+tf.__version__)
+print('Using Tensorflow '+ str(tf.__version__))
 import matplotlib.pyplot as plt
 import sys
 # sys.path.append('../')
@@ -13,9 +13,124 @@ import time
 import src.siamese as siam
 from src.visualization import show_frame, show_crops, show_scores
 
-
 # gpu_device = 2
 # os.environ['CUDA_VISIBLE_DEVICES'] = '{}'.format(gpu_device)
+
+class SiamTracker(object):
+    def __init__(self, hp, run, design, final_score_sz, image, templates_z, filename, scores):
+        self.hp = hp
+        self.run = run
+        self.design = design
+        self.final_score_sz = final_score_sz
+        self.image = image
+        self.templates_z = templates_z
+        self.filename = filename
+        self.scores = scores
+
+        self.scale_factors = None
+        self.penalty = None
+        self.pos_x = None
+        self.pos_y = None
+        self.z_sz = None
+        self.x_sz = None
+        self.target_w = None
+        self.target_h = None
+        self.templates_z_val = None
+        self._prepare_params(self.hp, self.run, self.design, self.final_score_sz)
+
+    def _prepare_params(self, hp, run, design, final_score_sz):
+        self.scale_factors = hp.scale_step**np.linspace(-np.ceil(hp.scale_num/2), np.ceil(hp.scale_num/2), hp.scale_num)
+        hann_1d = np.expand_dims(np.hanning(final_score_sz), axis=0)
+        penalty = np.transpose(hann_1d) * hann_1d
+        self.penalty = penalty / np.sum(penalty)
+
+    def start_track(self, frame_path, pos_x, pos_y, target_w, target_h):
+        context = self.design.context*(target_w+target_h)
+        self.z_sz = np.sqrt(np.prod((target_w+context)*(target_h+context)))
+        self.x_sz = float(self.design.search_sz) / self.design.exemplar_sz * self.z_sz
+        self.pos_x = pos_x
+        self.pos_y = pos_y
+        self.target_w = target_w
+        self.target_h = target_h
+
+        with tf.Session() as sess:
+            tf.global_variables_initializer().run()
+            # Coordinate the loading of image files.
+            coord = tf.train.Coordinator()
+            threads = tf.train.start_queue_runners(coord=coord)
+            
+            # save first frame position (from ground-truth)
+            # bboxes[0,:] = pos_x-target_w/2, pos_y-target_h/2, target_w, target_h                
+
+            image_, templates_z_ = sess.run([self.image, self.templates_z], feed_dict={
+                                                                            siam.pos_x_ph: pos_x,
+                                                                            siam.pos_y_ph: pos_y,
+                                                                            siam.z_sz_ph: z_sz,
+                                                                            self.filename: frame_path})
+            self.templates_z_val = templates_z_             
+
+    def update(self, frame_path):
+        run_opts = {}
+        t_start = time.time()
+
+        scaled_exemplar = self.z_sz * self.scale_factors
+        scaled_search_area = self.x_sz * self.scale_factors
+        scaled_target_w = self.target_w * self.scale_factors
+        scaled_target_h = self.target_h * self.scale_factors
+        with tf.Session() as sess:
+            tf.global_variables_initializer().run()        
+            image_, scores_ = sess.run(
+                [self.image, self.scores],
+                feed_dict={
+                    siam.pos_x_ph: self.pos_x,
+                    siam.pos_y_ph: self.pos_y,
+                    siam.x_sz0_ph: scaled_search_area[0],
+                    siam.x_sz1_ph: scaled_search_area[1],
+                    siam.x_sz2_ph: scaled_search_area[2],
+                    self.templates_z: np.squeeze(self.templates_z_val),
+                    self.filename: frame_path,
+                }, **run_opts)
+            scores_ = np.squeeze(scores_)
+            # penalize change of scale
+            scores_[0,:,:] = self.hp.scale_penalty*scores_[0,:,:]
+            scores_[2,:,:] = self.hp.scale_penalty*scores_[2,:,:]
+            # find scale with highest peak (after penalty)
+            new_scale_id = np.argmax(np.amax(scores_, axis=(1,2)))
+            # update scaled sizes
+            x_sz = (1-self.hp.scale_lr)*self.x_sz + self.hp.scale_lr*scaled_search_area[new_scale_id]        
+            self.target_w = (1-self.hp.scale_lr)*self.target_w + self.hp.scale_lr*scaled_target_w[new_scale_id]
+            self.target_h = (1-self.hp.scale_lr)*self.target_h + self.hp.scale_lr*scaled_target_h[new_scale_id]
+            # select response with new_scale_id
+            score_ = scores_[new_scale_id,:,:]
+            score_ = score_ - np.min(score_)
+            score_ = score_/np.sum(score_)
+            # apply displacement penalty
+            score_ = (1-self.hp.window_influence)*score_ + self.hp.window_influence*self.penalty
+            self.pos_x, self.pos_y = _update_target_position(self.pos_x, self.pos_y, score_, self.final_score_sz, self.design.tot_stride, self.design.search_sz, self.hp.response_up, x_sz)
+            # convert <cx,cy,w,h> to <x,y,w,h> and save output
+            # bboxes[i,:] = pos_x-target_w/2, pos_y-target_h/2, target_w, target_h
+            # update the target representation with a rolling average
+            if self.hp.z_lr>0:
+                new_templates_z_ = sess.run([self.templates_z], feed_dict={
+                                                                siam.pos_x_ph: self.pos_x,
+                                                                siam.pos_y_ph: self.pos_y,
+                                                                siam.z_sz_ph: self.z_sz,
+                                                                self.image: image_
+                                                                })
+
+                self.templates_z_val =(1-self.hp.z_lr)*np.asarray(self.templates_z_val) + self.hp.z_lr*np.asarray(new_templates_z_)
+            
+            # update template patch size
+            self.z_sz = (1-self.hp.scale_lr)*self.z_sz + self.hp.scale_lr*scaled_exemplar[new_scale_id]
+            
+            # if self.run.visualization:
+            #     show_frame(image_, bboxes[i,:], 1)
+
+        t_elapsed = time.time() - t_start
+        print("time elapsed", t_elapsed)
+
+    def get_position(self):
+        return [self.pos_x-self.target_w/2, self.pos_y-self.target_h/2, self.target_w, self.target_h]
 
 # read default parameters and override with custom ones
 def tracker(hp, run, design, frame_name_list, pos_x, pos_y, target_w, target_h, final_score_sz, filename, image, templates_z, scores, start_frame):
